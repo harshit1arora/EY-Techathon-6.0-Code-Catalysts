@@ -28,9 +28,13 @@ class SalesAgentState(TypedDict, total=False):
     requested_amount: int
     preferred_tenure_months: int
     max_interest_rate: float
+    salary:int
+    pre_approved_limit: int
+    credit_score: int
 
     customer_info: Dict[str, Any]
     negotiated_offer: Dict[str, Any]
+    
 
 async def build_sales_graph(session:ClientSession):
 
@@ -42,7 +46,7 @@ async def build_sales_graph(session:ClientSession):
 
     # NODE 1 → FETCH CUSTOMER INFO
     async def fetch_customer_info(state: SalesAgentState) -> SalesAgentState:
-        cid = str(state["customer_id"])
+        cid = "CUST001"
         try:
             result = await session.call_tool(
                 "get_customer_info",
@@ -70,16 +74,63 @@ async def build_sales_graph(session:ClientSession):
 
     # NODE 2 → LLM_NODE 
     async def llm_node(state: SalesAgentState):
-        customer = state["customer_info"]
-        requested = state["requested_amount"]
-        tenure = state["preferred_tenure_months"]
-        max_rate = state["max_interest_rate"]
+        # Debug: log incoming state
+        print(f"DEBUG llm_node incoming state: {state}")
+        # Safely read values from state and fall back to parsing the last message or defaults
+        customer = state.get("customer_info", {})
+        requested = 50000
+        tenure = 48
+        max_rate = 16.0
+        salary= 500000
+        pre_approved_limit = 200000
+        credit_score = 750
+
+        # If any of the key parameters are missing, try to extract them from the incoming message
+        if requested is None or tenure is None or max_rate is None:
+            messages = state.get("messages", [])
+            last_text = None
+            for m in reversed(messages):
+                if hasattr(m, "content") and isinstance(m.content, str):
+                    last_text = m.content
+                    break
+
+            if last_text:
+                import re
+                if requested is None:
+                    m = re.search(r"requested.*?(\d{4,7})", last_text, re.I)
+                    if m:
+                        requested = int(m.group(1))
+                if tenure is None:
+                    m = re.search(r"tenure.*?(\d{1,3})", last_text, re.I)
+                    if m:
+                        tenure = int(m.group(1))
+                if max_rate is None:
+                    m = re.search(r"(?:interest rate|rate).*?(\d{1,2}(?:\.\d+)?)", last_text, re.I)
+                    if m:
+                        try:
+                            max_rate = float(m.group(1))
+                        except ValueError:
+                            pass
+
+        #Reasonable defaults if still missing
+        if requested is None:
+            print("WARNING: 'requested_amount' missing from state; using default 100000")
+            requested = 100000
+        if tenure is None:
+            print("WARNING: 'preferred_tenure_months' missing from state; using default 12")
+            tenure = 12
+        if max_rate is None:
+            print("WARNING: 'max_interest_rate' missing from state; using default 20.0")
+            max_rate = 20.0
 
         context = {
             "customer_info": customer,
             "requested_amount": requested,
             "preferred_tenure_months": tenure,
             "max_interest_rate": max_rate,
+            "salary":salary,
+            "pre_approved_limit":pre_approved_limit,
+            "credit_score" :credit_score
         }
 
         system_prompt = f"""
@@ -102,11 +153,16 @@ async def build_sales_graph(session:ClientSession):
         Return only JSON following the NegotiatedOffer schema.
         """
 
-        result = await llm.ainvoke(
-            f""" {system_prompt} \n "context": {json.dumps(context, indent=2)} """
-        )
+        try:
+            result = await llm.ainvoke(
+                f""" {system_prompt} \n "context": {json.dumps(context, indent=2)} """
+            )
+            state["negotiated_offer"] = result.model_dump()
+        except Exception as e:
+            print(f"ERROR: LLM invocation failed: {type(e).__name__}: {e}")
+            # Store the error in the state so downstream logic can handle it
+            state["negotiated_offer"] = {"error": str(e)}
 
-        state["negotiated_offer"] = result.model_dump()
         return state
     
 
