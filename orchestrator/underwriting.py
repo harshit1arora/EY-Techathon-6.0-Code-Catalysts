@@ -81,7 +81,7 @@ async def build_underwriting_graph(session: ClientSession):
 
     # NODE 1 -> FETCHING CREDIT SCORE
     async def fetch_credit_score(state: UnderwritingAgentState):
-        cid = str(state["customer_id"])
+        cid = "CUST001"
         try:
             result = await session.call_tool(
                 "get_credit_score",
